@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Secure Login System</title>
+<style>
+  :root { --blue:#2952e3; --green:#1f9d55; --red:#d64545; --bg:#f5f6fa; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; background:var(--bg); margin:0; padding:0; display:flex; justify-content:center; }
+  .card { background:#fff; padding:2rem; border-radius:12px; box-shadow:0 4px 20px rgba(0,0,0,.08); width:100%; max-width:400px; margin-top:4rem; }
+  h1 { font-size:1.4rem; margin-bottom:1rem; }
+  input { width:100%; padding:.6rem .8rem; margin:.4rem 0; border:1px solid #ccc; border-radius:8px; font-size:1rem; }
+  button { width:100%; padding:.7rem; margin-top:.8rem; border:none; border-radius:8px; background:var(--blue); color:#fff; font-weight:600; font-size:1rem; cursor:pointer; }
+  button.secondary { background:#eee; color:#333; }
+  .msg { margin-top:.8rem; font-size:.9rem; }
+  .msg.error { color:var(--red); }
+  .msg.success { color:var(--green); }
+  .switch { margin-top:1rem; font-size:.9rem; text-align:center; }
+  .switch a { color:var(--blue); cursor:pointer; text-decoration:underline; }
+  img.qr { display:block; margin:1rem auto; }
+  .hidden { display:none; }
+</style>
+</head>
+<body>
+<div class="card" id="app">Loading...</div>
+
+<script>
+const app = document.getElementById('app');
+const api = (url, opts={}) => fetch('/api/auth'+url, {
+  method: opts.method || 'POST',
+  headers: {'Content-Type':'application/json'},
+  body: opts.body ? JSON.stringify(opts.body) : undefined,
+}).then(async r => ({ ok: r.ok, status: r.status, data: await r.json() }));
+
+async function init() {
+  const me = await fetch('/api/dashboard');
+  if (me.ok) return renderDashboard();
+  renderLogin();
+}
+
+function renderLogin() {
+  app.innerHTML = `
+    <h1>Log In</h1>
+    <input id="email" type="email" placeholder="Email" autocomplete="username" />
+    <input id="password" type="password" placeholder="Password" autocomplete="current-password" />
+    <button id="loginBtn">Log In</button>
+    <div class="msg" id="msg"></div>
+    <div class="switch">No account? <a id="toRegister">Register</a></div>
+  `;
+  document.getElementById('toRegister').onclick = renderRegister;
+  document.getElementById('loginBtn').onclick = async () => {
+    const email = document.getElementById('email').value;
+    const password = document.getElementById('password').value;
+    const { ok, data } = await api('/login', { body: { email, password } });
+    const msg = document.getElementById('msg');
+    if (!ok) { msg.className='msg error'; msg.textContent = data.error || (data.errors||[]).join(', '); return; }
+    if (data.twoFactorRequired) return render2FAPrompt();
+    renderDashboard();
+  };
+}
+
+function render2FAPrompt() {
+  app.innerHTML = `
+    <h1>Two-Factor Code</h1>
+    <p>Enter the 6-digit code from your authenticator app.</p>
+    <input id="token" placeholder="123456" maxlength="6" />
+    <button id="verifyBtn">Verify</button>
+    <div class="msg" id="msg"></div>
+  `;
+  document.getElementById('verifyBtn').onclick = async () => {
+    const token = document.getElementById('token').value;
+    const { ok, data } = await api('/login/2fa', { body: { token } });
+    const msg = document.getElementById('msg');
+    if (!ok) { msg.className='msg error'; msg.textContent = data.error; return; }
+    renderDashboard();
+  };
+}
+
+function renderRegister() {
+  app.innerHTML = `
+    <h1>Create Account</h1>
+    <input id="email" type="email" placeholder="Email" autocomplete="username" />
+    <input id="password" type="password" placeholder="Password (10+ chars, mixed case, number)" autocomplete="new-password" />
+    <button id="registerBtn">Register</button>
+    <div class="msg" id="msg"></div>
+    <div class="switch">Already have an account? <a id="toLogin">Log In</a></div>
+  `;
+  document.getElementById('toLogin').onclick = renderLogin;
+  document.getElementById('registerBtn').onclick = async () => {
+    const email = document.getElementById('email').value;
+    const password = document.getElementById('password').value;
+    const { ok, data } = await api('/register', { body: { email, password } });
+    const msg = document.getElementById('msg');
+    if (!ok) { msg.className='msg error'; msg.textContent = data.error || (data.errors||[]).join(', '); return; }
+    msg.className='msg success'; msg.textContent = 'Account created! Redirecting to login...';
+    setTimeout(renderLogin, 1200);
+  };
+}
+
+async function renderDashboard() {
+  const { data } = await api('/me', { method: 'GET' });
+  app.innerHTML = `
+    <h1>Welcome</h1>
+    <p>Signed in as <strong>${data.email || ''}</strong></p>
+    <p>Two-factor authentication: <strong>${data.totpEnabled ? 'Enabled' : 'Disabled'}</strong></p>
+    <button id="toggle2fa" class="secondary">${data.totpEnabled ? 'Disable' : 'Enable'} 2FA</button>
+    <button id="logoutBtn">Log Out</button>
+    <div id="twofa-area"></div>
+    <div class="msg" id="msg"></div>
+  `;
+  document.getElementById('logoutBtn').onclick = async () => { await api('/logout'); renderLogin(); };
+  document.getElementById('toggle2fa').onclick = async () => {
+    if (data.totpEnabled) { await api('/2fa/disable'); return renderDashboard(); }
+    const { data: setup } = await api('/2fa/setup');
+    document.getElementById('twofa-area').innerHTML = `
+      <img class="qr" src="${setup.qrCode}" width="180" height="180" />
+      <p style="font-size:.8rem;text-align:center;">Or enter manually: ${setup.manualEntryKey}</p>
+      <input id="enableToken" placeholder="Enter 6-digit code to confirm" maxlength="6" />
+      <button id="confirmEnable">Confirm & Enable</button>
+    `;
+    document.getElementById('confirmEnable').onclick = async () => {
+      const token = document.getElementById('enableToken').value;
+      const { ok, data: res } = await api('/2fa/enable', { body: { token } });
+      const msg = document.getElementById('msg');
+      if (!ok) { msg.className='msg error'; msg.textContent = res.error; return; }
+      renderDashboard();
+    };
+  };
+}
+
+init();
+</script>
+</body>
+</html>
